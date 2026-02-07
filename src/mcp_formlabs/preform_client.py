@@ -28,12 +28,40 @@ class PreFormError(Exception):
 class PreFormClient:
     """Stateful HTTP client for the PreForm Local API."""
 
-    def __init__(self, base_url: str | None = None):
+    def __init__(self, base_url: str | None = None, token: str | None = None):
         self.base_url = (
             base_url or os.getenv("PREFORM_API_URL") or DEFAULT_BASE_URL
         ).rstrip("/")
         self.session = requests.Session()
         self.session.headers.update({"Content-Type": "application/json"})
+        self._token = token
+
+    def set_token(self, token: str) -> None:
+        """Set the authentication token for API requests."""
+        self._token = token
+        if token:
+            self.session.headers.update({"Authorization": f"Bearer {token}"})
+        elif "Authorization" in self.session.headers:
+            del self.session.headers["Authorization"]
+
+    def load_token_from_keychain(self, telegram_user_id: int) -> bool:
+        """Load authentication token from macOS Keychain.
+        
+        Args:
+            telegram_user_id: The Telegram user ID to look up
+            
+        Returns:
+            True if token was loaded, False otherwise
+        """
+        try:
+            from mcp_formlabs.keychain import get_token
+            creds = get_token(telegram_user_id)
+            if creds and creds.formlabs_token:
+                self.set_token(creds.formlabs_token)
+                return True
+        except Exception:
+            pass
+        return False
 
     # ── helpers ──────────────────────────────────────────────────────
 
