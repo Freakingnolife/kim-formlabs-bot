@@ -10,32 +10,23 @@ claude [options] [command] [prompt]
 ```
 
 **Model Configuration:**
-- Set to `claude-opus-4-6-20250205` in `~/.claude/settings.json`
-- This is already configured ✓
+- Set to `claude-opus-4-6-20250205` in `~/.claude/settings.json` ✓
 
-### 2. Permission Handling
+**Permission Configuration:**
+- `permissionMode: "bypassPermissions"` in `~/.claude/settings.json` ✓
+- This skips all permission prompts by default
 
-**Option A - Skip permissions (for trusted projects):**
+### 2. Default Behavior
+
+With the current settings, running:
 ```bash
-claude --dangerously-skip-permissions [prompt]
+claude "your prompt"
 ```
 
-**Option B - Use permission mode:**
-```bash
-claude --permission-mode bypassPermissions [prompt]
-```
-
-**Available modes:**
-- `acceptEdits` - Auto-accept edit suggestions
-- `bypassPermissions` - Skip all permission checks
-- `dontAsk` - Don't ask for confirmation
-- `default` - Normal interactive mode
-- `plan` - Plan mode (review before executing)
-
-**Option C - Non-interactive (for scripts):**
-```bash
-claude -p --dangerously-skip-permissions "your prompt"
-```
+Will automatically:
+- Use Opus 4.6 model
+- Bypass all permission checks
+- No interactive prompts for file edits
 
 ### 3. Switching to Direct Mode
 
@@ -43,18 +34,18 @@ claude -p --dangerously-skip-permissions "your prompt"
 
 If Claude Code CLI is:
 - Taking too long
-- Stuck on prompts
-- Failing repeatedly
+- Stuck/failing
+- Not working as expected
 
 **Ask first:**
 > "CLI is slow/stuck on [specific issue]. Want me to switch to direct mode or try different flags?"
 
 ### 4. Common Commands
 
-**Start coding task:**
+**Start coding task (auto-skips permissions):**
 ```bash
 cd /path/to/project
-claude --dangerously-skip-permissions "implement feature X"
+claude "implement feature X"
 ```
 
 **Continue previous session:**
@@ -67,9 +58,9 @@ claude -c
 claude --resume [session-id]
 ```
 
-**With specific model:**
+**Override with explicit permissions (if needed):**
 ```bash
-claude --model opus "your prompt"
+claude --permission-mode default "your prompt"
 ```
 
 ### 5. Project Structure
@@ -79,17 +70,16 @@ When using Claude Code:
 2. Ensure `.git` is initialized
 3. Use absolute paths in prompts if needed
 
-### 6. Safety
+### 6. Settings Location
 
-- `--dangerously-skip-permissions` is safe in:
-  - Your own projects
-  - Git-tracked repos
-  - Non-production environments
-
-- Do NOT use in:
-  - Untrusted repositories
-  - Production systems
-  - Shared/multi-user environments
+**User settings:** `~/.claude/settings.json`
+```json
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "model": "claude-opus-4-6-20250205",
+  "permissionMode": "bypassPermissions"
+}
+```
 
 ## References
 
