@@ -9,6 +9,9 @@ from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 
 from mcp_formlabs.preform_client import PreFormClient, PreFormError
+from mcp_formlabs.materials import parse_material
+from mcp_formlabs.presets import get_preset, list_presets as _list_presets
+from mcp_formlabs.preflight import preflight_check as _preflight_check
 
 load_dotenv()
 
@@ -72,6 +75,175 @@ def get_materials() -> str:
         {"code": "FLFMGR01", "name": "Fast Model V1", "layers": [0.05, 0.1]},
     ]
     return _fmt(materials)
+
+
+@mcp.tool()
+def parse_material_query(query: str) -> str:
+    """Parse a natural language material query.
+
+    Args:
+        query: Natural language query like "tough grey resin", "fast mode",
+               "clear v5 detail", "0.05mm elastic".
+
+    Returns: Material code, layer height, and material name.
+    """
+    result = parse_material(query)
+    return _fmt(result)
+
+
+@mcp.tool()
+def list_presets() -> str:
+    """List available print presets for common use cases."""
+    return _fmt(_list_presets())
+
+
+@mcp.tool()
+def print_with_preset(
+    file_path: str,
+    preset_name: str,
+    copies: int = 1,
+    printer_id: str | None = None,
+    group_id: str | None = None,
+) -> str:
+    """Print a model using a predefined preset configuration.
+
+    Args:
+        file_path: Path to the 3D model file.
+        preset_name: Preset name (miniatures, prototypes, functional, clear,
+                     durable, flexible, black).
+        copies: Number of copies (default 1).
+        printer_id: Target printer ID (optional).
+        group_id: Target printer group (optional).
+    """
+    preset = get_preset(preset_name)
+    if not preset:
+        return f"Unknown preset: {preset_name}. Available: {', '.join([p['name'] for p in _list_presets()])}"
+
+    # Use the print_model tool with preset values
+    return print_model(
+        file_path=file_path,
+        material=preset["material_code"],
+        layer_height=preset["layer_height"],
+        printer_type=preset["printer_type"],
+        copies=copies,
+        printer_id=printer_id,
+        group_id=group_id,
+    )
+
+
+@mcp.tool()
+def preflight_check(file_path: str) -> str:
+    """Analyze a 3D model before printing for issues and recommendations.
+
+    Args:
+        file_path: Path to the 3D model file (STL, OBJ, 3MF).
+
+    Returns: Volume, manifold status, dimensions, overhangs, and recommendations.
+    """
+    result = _preflight_check(file_path)
+    return _fmt(result)
+
+
+@mcp.tool()
+def list_jobs(status: str | None = None) -> str:
+    """List print jobs in the queue.
+
+    Args:
+        status: Filter by status (running, queued, completed).
+    """
+    try:
+        jobs = _client.list_jobs(status=status)
+        return _fmt(jobs)
+    except PreFormError as e:
+        return f"Error listing jobs: {e}"
+
+
+@mcp.tool()
+def get_job_status(job_id: str) -> str:
+    """Get the status of a specific print job.
+
+    Args:
+        job_id: The job ID to check.
+    """
+    try:
+        result = _client.get_job_status(job_id)
+        return _fmt(result)
+    except PreFormError as e:
+        return f"Error getting job status: {e}"
+
+
+@mcp.tool()
+def cancel_job(job_id: str) -> str:
+    """Cancel a print job.
+
+    Args:
+        job_id: The job ID to cancel.
+    """
+    try:
+        result = _client.cancel_job(job_id)
+        return f"Job {job_id} cancelled.\n{_fmt(result)}"
+    except PreFormError as e:
+        return f"Error cancelling job: {e}"
+
+
+@mcp.tool()
+def import_batch(
+    folder_path: str,
+    material: str,
+    layer_height: float,
+    printer_type: str = "Form 4",
+    max_density: float = 0.8,
+) -> str:
+    """Import all STL/OBJ files from a folder into a single scene.
+
+    Args:
+        folder_path: Path to folder containing model files.
+        material: Material code (e.g. "FLGPGR05").
+        layer_height: Layer thickness in mm.
+        printer_type: Printer model (default "Form 4").
+        max_density: Maximum packing density (0.0-1.0).
+    """
+    global _current_scene_id
+
+    import os
+    expanded = os.path.expanduser(folder_path)
+
+    # Find all model files
+    extensions = (".stl", ".obj", ".3mf", ".form")
+    files = [f for f in os.listdir(expanded) if f.lower().endswith(extensions)]
+
+    if not files:
+        return f"No model files found in {folder_path}"
+
+    steps = []
+    try:
+        # Create scene
+        scene = _client.create_scene(printer_type, material, layer_height)
+        sid = str(scene.get("id", scene.get("scene_id", "")))
+        _current_scene_id = sid
+        steps.append(f"1. Scene created (id: {sid})")
+
+        # Import all models
+        imported = 0
+        for filename in files:
+            filepath = os.path.join(expanded, filename)
+            try:
+                _client.import_model(sid, filepath, auto_orient=True, repair=False)
+                imported += 1
+            except PreFormError as e:
+                steps.append(f"  ⚠️ Failed to import {filename}: {e}")
+
+        steps.append(f"2. Imported {imported}/{len(files)} models")
+
+        # Auto-layout
+        _client.auto_layout(sid)
+        steps.append("3. Auto-layout complete")
+
+        return f"Batch import complete:\n" + "\n".join(steps)
+
+    except PreFormError as e:
+        steps.append(f"FAILED: {e}")
+        return "Batch import stopped:\n" + "\n".join(steps)
 
 
 @mcp.tool()

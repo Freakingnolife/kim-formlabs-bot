@@ -52,15 +52,31 @@ Or if using `uv` directly:
 
 ## Available Tools
 
+### Material & Presets
 | Tool | Description |
 |------|-------------|
 | `get_materials` | List available resins and their supported layer heights |
+| `parse_material_query` | Parse natural language like "tough grey resin" or "fast mode" |
+| `list_presets` | List available print presets (miniatures, prototypes, etc.) |
+| `print_with_preset` | Print using a preset configuration |
+
+### Printer & Job Management
+| Tool | Description |
+|------|-------------|
 | `list_printers` | List fleet devices, optionally filtered by group or readiness |
 | `login` | Authenticate with Formlabs Dashboard for fleet access |
+| `list_jobs` | List print jobs in the queue |
+| `get_job_status` | Check status of a specific print job |
+| `cancel_job` | Cancel a queued or running print job |
+
+### Scene Management
+| Tool | Description |
+|------|-------------|
 | `create_scene` | Create a new scene for a printer type, material, and layer height |
 | `get_scene_info` | Get information about a specific scene |
 | `delete_scene` | Delete a scene |
 | `import_model` | Import an STL/OBJ/3MF file into a scene |
+| `import_batch` | Import all models from a folder into one scene |
 | `duplicate_parts` | Duplicate parts in a scene |
 | `auto_orient` | Auto-orient models for optimal print quality |
 | `generate_supports` | Generate support structures |
@@ -68,6 +84,15 @@ Or if using `uv` directly:
 | `generate_preview` | Generate a screenshot preview |
 | `slice_scene` | Slice the scene for printing |
 | `send_to_printer` | Send a sliced scene to a printer or queue |
+
+### Pre-Flight Analysis
+| Tool | Description |
+|------|-------------|
+| `preflight_check` | Analyze mesh before printing (volume, manifold check, overhangs) |
+
+### Workflows
+| Tool | Description |
+|------|-------------|
 | `print_model` | One-shot: scene → import → orient → support → layout → slice → print |
 
 ## Example Usage
@@ -77,6 +102,36 @@ Ask Claude:
 > "Import my model at ~/models/bracket.stl, set up for Form 4 with Black Resin V5 at 0.05mm, make 3 copies, and send it to print."
 
 Claude will use `print_model` to handle the entire workflow automatically.
+
+### Natural Language Materials
+
+> "Print this in tough grey resin at fine detail"
+
+Claude parses "tough grey" → Tough 2000, "fine detail" → 0.025mm.
+
+### Print Presets
+
+> "Print the bracket using the functional preset"
+
+Available presets: `miniatures`, `prototypes`, `functional`, `clear`, `durable`, `flexible`, `black`
+
+### Batch Import
+
+> "Import all models from ~/models/batch/ and set up for Grey V5"
+
+Imports all STL/OBJ/3MF files from the folder into a single scene with auto-layout.
+
+### Pre-Flight Check
+
+> "Check this model for issues before printing"
+
+Analyzes mesh for watertightness, overhangs, and provides recommendations.
+
+### Job Management
+
+> "Show me the print queue" / "Cancel job abc123"
+
+Monitor and manage active print jobs.
 
 ## Environment Variables
 
