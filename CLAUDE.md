@@ -1,88 +1,56 @@
-# CLAUDE.md - Claude Code Configuration
+# CLAUDE.md - Kim Formlabs Bot
 
-## Workflow Rules
+> **Note:** This project follows the [global CLAUDE.md](../CLAUDE.md) rules.
+> 
+> **Universal Rule:** Use Claude Code CLI for all coding tasks.
+
+---
+
+## Project-Specific Rules
 
 ### 1. Coding Tasks
 
-**MUST use Claude Code CLI** for all coding tasks:
+Follow global rule: Use `claude` CLI command.
+
 ```bash
-claude [options] [command] [prompt]
+cd mcp-formlabs-server
+claude "implement feature..."
 ```
 
-**Model Configuration:**
-- Set to `claude-opus-4-6-20250205` in `~/.claude/settings.json` ✓
+### 2. Testing Commands
 
-**Permission Configuration:**
-- `permissionMode: "bypassPermissions"` in `~/.claude/settings.json` ✓
-- This skips all permission prompts by default
-
-### 2. Default Behavior
-
-With the current settings, running:
+After CLI writes code, use direct mode for:
 ```bash
-claude "your prompt"
+# Check if server is running
+curl http://127.0.0.1:8765/health
+
+# Check auth server logs
+tail -f /tmp/kim-auth.log
+
+# Test command
+python3 run_command.py /printers --user-id 6217674573
 ```
 
-Will automatically:
-- Use Opus 4.6 model
-- Bypass all permission checks
-- No interactive prompts for file edits
+### 3. File Locations
 
-### 3. Switching to Direct Mode
+| File | Purpose |
+|------|---------|
+| `start_auth_only.sh` | Start auth server |
+| `bot_commands.py` | Telegram command handlers |
+| `access_control.py` | User approval system |
+| `src/mcp_formlabs/` | Core modules |
 
-**NEVER switch without explicit approval.**
+### 4. Development Workflow
 
-If Claude Code CLI is:
-- Taking too long
-- Stuck/failing
-- Not working as expected
+1. **Edit code:** Use `claude` CLI
+2. **Test changes:** Use direct `exec` commands
+3. **Commit:** Use direct `exec git` commands
+4. **Deploy:** Use `claude` CLI for setup scripts
 
-**Ask first:**
-> "CLI is slow/stuck on [specific issue]. Want me to switch to direct mode or try different flags?"
-
-### 4. Common Commands
-
-**Start coding task (auto-skips permissions):**
-```bash
-cd /path/to/project
-claude "implement feature X"
-```
-
-**Continue previous session:**
-```bash
-claude -c
-```
-
-**Resume specific session:**
-```bash
-claude --resume [session-id]
-```
-
-**Override with explicit permissions (if needed):**
-```bash
-claude --permission-mode default "your prompt"
-```
-
-### 5. Project Structure
-
-When using Claude Code:
-1. Navigate to project directory first
-2. Ensure `.git` is initialized
-3. Use absolute paths in prompts if needed
-
-### 6. Settings Location
-
-**User settings:** `~/.claude/settings.json`
-```json
-{
-  "$schema": "https://json.schemastore.org/claude-code-settings.json",
-  "model": "claude-opus-4-6-20250205",
-  "permissionMode": "bypassPermissions"
-}
-```
+---
 
 ## References
 
-- Settings: `~/.claude/settings.json`
-- Sessions: `~/.claude/sessions/`
-- Documentation: https://docs.anthropic.com/en/docs/claude-code
+- **Global Rules:** [../CLAUDE.md](../CLAUDE.md)
+- **Settings:** ~/.claude/settings.json
+- **PRD:** [PRD.md](PRD.md)
