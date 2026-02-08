@@ -22,6 +22,25 @@ from approval_system import (
     get_approved_message, get_rejected_message, get_approved_count
 )
 
+# Import new features
+try:
+    from fixture_generator import generate_fixture, StandardLibrary
+    HAS_FIXTURE = True
+except ImportError:
+    HAS_FIXTURE = False
+
+try:
+    from resin_prophet import ResinProphet, cmd_resin_status, cmd_resin_add, cmd_resin_alert
+    HAS_RESIN = True
+except ImportError:
+    HAS_RESIN = False
+
+try:
+    from csi_analyzer import cmd_csi, cmd_analyze
+    HAS_CSI = True
+except ImportError:
+    HAS_CSI = False
+
 
 def get_client_for_user(telegram_user_id: int) -> PreFormClient | None:
     """Get a PreFormClient authenticated for a specific user."""
@@ -316,6 +335,135 @@ def cmd_help(telegram_user_id: int) -> str:
     return help_text
 
 
+# ============================================================================
+# NEW FEATURE COMMANDS
+# ============================================================================
+
+def cmd_fixture(telegram_user_id: int, args: list = None) -> str:
+    """Generate fixture for object.
+    
+    Usage: /fixture <object> [--operation <op>] [--clearance <mm>]
+    Examples:
+      /fixture iphone_15_pro --operation soldering
+      /fixture my_part.stl --operation drilling --clearance 10
+    """
+    if not HAS_FIXTURE:
+        return "❌ Fixture generator not available. Install required dependencies."
+    
+    if not is_approved(telegram_user_id):
+        return "⏳ Access pending approval. Please contact @marcus_liangzhu"
+    
+    if not args:
+        # List available standard objects
+        available = StandardLibrary.list_all()
+        return (
+            "🔧 *Fixture Generator*\n\n"
+            "Generate custom holding jigs for your prints.\n\n"
+            "*Usage:*\n"
+            "/fixture <object> [--operation <op>]\n\n"
+            "*Operations:* drilling, soldering, painting, cnc, inspection\n\n"
+            "*Standard Objects:*\n"
+            + "\n".join(f"  • {key}" for key in available[:10])
+            + (f"\n  ... and {len(available)-10} more" if len(available) > 10 else "")
+            + "\n\nOr upload an STL file:\n"
+            "/fixture my_custom_part.stl --operation drilling"
+        )
+    
+    target = args[0]
+    
+    # Parse options
+    operation = "drilling"
+    clearance = 5.0
+    
+    if "--operation" in args:
+        idx = args.index("--operation")
+        if idx + 1 < len(args):
+            operation = args[idx + 1]
+    
+    if "--clearance" in args:
+        idx = args.index("--clearance")
+        if idx + 1 < len(args):
+            try:
+                clearance = float(args[idx + 1])
+            except ValueError:
+                pass
+    
+    # Generate fixture
+    result = generate_fixture(
+        target=target,
+        operation=operation,
+        clearance=clearance,
+        output_dir=f"./fixtures/{telegram_user_id}"
+    )
+    
+    if result["success"]:
+        response = (
+            f"✅ *Fixture Generated*\n\n"
+            f"Object: {result['object_name']}\n"
+            f"Operation: {operation}\n"
+            f"Dimensions: {result['dimensions'][0]:.1f} x {result['dimensions'][1]:.1f} x {result['dimensions'][2]:.1f} mm\n\n"
+        )
+        
+        if result.get("stl_path"):
+            response += f"📁 STL: {result['stl_path']}\n"
+        
+        response += f"📁 OpenSCAD: {result['scad_path']}\n\n"
+        response += "Send the SCAD file to OpenSCAD or use /print to queue it."
+        
+        return response
+    else:
+        return f"❌ {result.get('error', 'Unknown error')}"
+
+
+def cmd_resin(telegram_user_id: int, args: list = None) -> str:
+    """Show resin status."""
+    if not HAS_RESIN:
+        return "❌ Resin prophet not available."
+    
+    if not is_approved(telegram_user_id):
+        return "⏳ Access pending approval."
+    
+    if args and args[0] == "add":
+        # Add cartridge
+        if len(args) < 3:
+            return "Usage: /resin add <material_code> <material_name>"
+        
+        return cmd_resin_add(telegram_user_id, args[1], args[2])
+    
+    if args and args[0] == "alert":
+        return cmd_resin_alert(telegram_user_id)
+    
+    return cmd_resin_status(telegram_user_id)
+
+
+def cmd_csi_command(telegram_user_id: int, args: list = None, image_path: str = None) -> str:
+    """Analyze failed print photo.
+    
+    Usage: /csi (with attached photo)
+    """
+    if not HAS_CSI:
+        return "❌ CSI analyzer not available. Set OPENAI_API_KEY environment variable."
+    
+    if not is_approved(telegram_user_id):
+        return "⏳ Access pending approval."
+    
+    if not image_path:
+        return (
+            "🔍 *CSI: Print Crime Scene Investigation*\n\n"
+            "Upload a photo of your failed print and I'll analyze it.\n\n"
+            "*What I can detect:*\n"
+            "• Support failures\n"
+            "• Layer shifts\n"
+            "• Warping\n"
+            "• Resin contamination\n"
+            "• Exposure issues\n"
+            "• And more...\n\n"
+            "Send a photo with caption /csi"
+        )
+    
+    return cmd_csi(image_path)
+
+
 # Command dispatcher
 COMMANDS = {
     '/login': cmd_login,
@@ -328,6 +476,10 @@ COMMANDS = {
     '/approve': cmd_approve,
     '/reject': cmd_reject,
     '/users': cmd_list_users,
+    # New features
+    '/fixture': cmd_fixture,
+    '/resin': cmd_resin,
+    '/csi': cmd_csi_command,
 }
 
 
@@ -347,6 +499,19 @@ def handle_command(command: str, telegram_user_id: int, args: list = None, usern
             return cmd_func(telegram_user_id, target_id)
         except ValueError:
             return f"Invalid user ID. Usage: {command} USER_ID"
+    
+    # Handle fixture command with args
+    if command.lower() == '/fixture':
+        return cmd_fixture(telegram_user_id, args)
+    
+    # Handle resin command with args
+    if command.lower() == '/resin':
+        return cmd_resin(telegram_user_id, args)
+    
+    # Handle CSI command (needs image path)
+    if command.lower() == '/csi':
+        # Image path would be passed separately in real implementation
+        return cmd_csi_command(telegram_user_id, args)
     
     # Handle commands that need username
     if command.lower() == '/login':
