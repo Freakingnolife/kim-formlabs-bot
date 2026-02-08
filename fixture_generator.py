@@ -82,6 +82,37 @@ class AnalysisResult:
     bounding_box: tuple[tuple[float, float, float], tuple[float, float, float]]  # min, max
 
 
+@dataclass
+class FlatSurfaceCluster:
+    """A cluster of co-planar faces forming a flat surface."""
+    normal: tuple[float, float, float]
+    area: float  # mm² (convex hull area of the cluster)
+    center: tuple[float, float, float]
+    face_count: int
+    face_indices: list[int] = field(default_factory=list)
+
+
+@dataclass
+class OrientationScore:
+    """Score for a candidate print orientation."""
+    rotation: tuple[float, float, float]  # (rx, ry, rz) in degrees
+    overhang_area: float  # mm² of faces needing supports
+    base_contact_area: float  # mm² touching the build plate
+    support_volume_estimate: float  # mm³ rough support volume
+    score: float = 0.0  # lower is better
+
+
+@dataclass
+class GripPointSuggestion:
+    """A suggested grip/fixture contact point on the mesh."""
+    position: tuple[float, float, float]
+    normal: tuple[float, float, float]  # outward surface normal at this point
+    flatness: float  # 0-1, how flat the local neighbourhood is
+    stability: float  # 0-1, how close to COM projection
+    accessibility: float  # 0-1, how exposed the point is
+    score: float = 0.0  # composite score (higher is better)
+
+
 # ============================================================================
 # Standard Library
 # ============================================================================
@@ -313,6 +344,231 @@ class MeshAnalyzer:
             grip_points.append(grip_point)
         
         return grip_points
+
+    # ------------------------------------------------------------------
+    # Advanced analysis methods
+    # ------------------------------------------------------------------
+
+    def find_flat_surface_clusters(
+        self, mesh: trimesh.Trimesh, angle_threshold: float = 10.0, min_area: float = 5.0
+    ) -> list[FlatSurfaceCluster]:
+        """Cluster faces by normal direction and compute accurate surface areas.
+
+        Uses scipy hierarchical clustering on face normals, then ConvexHull
+        to measure the projected area of each cluster.
+
+        Args:
+            mesh: A trimesh mesh object.
+            angle_threshold: Max angle (degrees) between normals in a cluster.
+            min_area: Discard clusters smaller than this (mm²).
+
+        Returns:
+            List of FlatSurfaceCluster sorted by area descending.
+        """
+        if not HAS_SCIPY:
+            raise ImportError("scipy is required for clustering. Install with: pip install scipy")
+
+        normals = mesh.face_normals
+        areas = mesh.area_faces
+        centroids = mesh.triangles_center
+
+        # Hierarchical clustering on unit normals (cosine distance via 1 - dot)
+        # Ward linkage needs Euclidean, so we cluster the normal vectors directly
+        Z = linkage(normals, method="ward")
+        # Convert angle threshold to a rough Euclidean distance between unit vectors
+        # |a - b|² = 2 - 2*cos(θ)  =>  |a - b| = sqrt(2 - 2*cos(θ))
+        cos_thresh = np.cos(np.radians(angle_threshold))
+        dist_thresh = np.sqrt(2.0 - 2.0 * cos_thresh)
+        labels = fcluster(Z, t=dist_thresh, criterion="distance")
+
+        clusters: list[FlatSurfaceCluster] = []
+        for label in np.unique(labels):
+            mask = labels == label
+            face_idx = np.nonzero(mask)[0]
+            cluster_area_simple = float(np.sum(areas[mask]))
+            if cluster_area_simple < min_area:
+                continue
+
+            avg_normal = np.mean(normals[mask], axis=0)
+            norm = np.linalg.norm(avg_normal)
+            if norm < 1e-8:
+                continue
+            avg_normal /= norm
+
+            centers = centroids[mask]
+            avg_center = np.mean(centers, axis=0)
+
+            # Project face centres onto the plane perpendicular to avg_normal
+            # to compute the ConvexHull area of the cluster footprint.
+            cluster_area = cluster_area_simple  # fallback
+            if len(centers) >= 3:
+                try:
+                    # Build a 2D basis on the plane
+                    arbitrary = np.array([1, 0, 0]) if abs(avg_normal[0]) < 0.9 else np.array([0, 1, 0])
+                    u = np.cross(avg_normal, arbitrary)
+                    u /= np.linalg.norm(u)
+                    v = np.cross(avg_normal, u)
+                    pts_2d = np.column_stack([centers @ u, centers @ v])
+                    hull = ConvexHull(pts_2d)
+                    cluster_area = float(hull.volume)  # 2D ConvexHull: volume == area
+                except Exception:
+                    pass  # keep fallback sum of triangle areas
+
+            clusters.append(FlatSurfaceCluster(
+                normal=tuple(avg_normal),
+                area=cluster_area,
+                center=tuple(avg_center),
+                face_count=int(mask.sum()),
+                face_indices=face_idx.tolist(),
+            ))
+
+        clusters.sort(key=lambda c: c.area, reverse=True)
+        return clusters
+
+    def find_optimal_orientation(
+        self, mesh: trimesh.Trimesh, steps: int = 12
+    ) -> OrientationScore:
+        """Sample rotations and return the one that minimises supports.
+
+        For each candidate rotation the method computes:
+        - overhang area   (faces whose rotated normal has z < -0.1)
+        - base contact    (faces whose rotated normal has z >  0.95)
+        - support volume  (rough: overhang_area × average overhang height)
+
+        A simple composite score = overhang_area - 0.5 * base_contact_area
+        is minimised.
+
+        Args:
+            mesh: A trimesh mesh object.
+            steps: Number of angle samples per axis (total candidates = steps³).
+
+        Returns:
+            The best OrientationScore.
+        """
+        normals = mesh.face_normals
+        areas = mesh.area_faces
+        centroids = mesh.triangles_center
+        bounds = mesh.bounds
+        mesh_height = bounds[1][2] - bounds[0][2]
+
+        angles = np.linspace(0, 360, steps, endpoint=False)
+
+        best: OrientationScore | None = None
+
+        for rx in angles:
+            for ry in angles:
+                for rz in angles:
+                    R = trimesh.transformations.euler_matrix(
+                        np.radians(rx), np.radians(ry), np.radians(rz), axes="sxyz"
+                    )[:3, :3]
+                    rot_normals = normals @ R.T
+
+                    # Overhangs: rotated normal pointing down (z < -0.1)
+                    overhang_mask = rot_normals[:, 2] < -0.1
+                    overhang_area = float(np.sum(areas[overhang_mask]))
+
+                    # Base contact: rotated normal pointing up (z > 0.95)
+                    base_mask = rot_normals[:, 2] > 0.95
+                    base_contact = float(np.sum(areas[base_mask]))
+
+                    # Rough support volume: avg height of overhang centroids × area
+                    if np.any(overhang_mask):
+                        rot_centroids = centroids[overhang_mask] @ R.T
+                        avg_height = float(np.mean(np.abs(rot_centroids[:, 2] - bounds[0][2])))
+                        support_vol = overhang_area * avg_height
+                    else:
+                        support_vol = 0.0
+
+                    score = overhang_area - 0.5 * base_contact
+                    candidate = OrientationScore(
+                        rotation=(float(rx), float(ry), float(rz)),
+                        overhang_area=overhang_area,
+                        base_contact_area=base_contact,
+                        support_volume_estimate=support_vol,
+                        score=score,
+                    )
+                    if best is None or score < best.score:
+                        best = candidate
+
+        assert best is not None
+        return best
+
+    def suggest_grip_points(
+        self, mesh: trimesh.Trimesh, n_points: int = 6
+    ) -> list[GripPointSuggestion]:
+        """Score candidate grip points on the mesh surface.
+
+        Candidates are face centroids. Each is scored on:
+        - flatness:      alignment of the face normal with neighbours.
+        - stability:     proximity to the vertical projection of the COM.
+        - accessibility: how exposed/exterior the point is (distance from COM).
+
+        Args:
+            mesh: A trimesh mesh object.
+            n_points: How many top suggestions to return.
+
+        Returns:
+            List of GripPointSuggestion sorted by composite score descending.
+        """
+        normals = mesh.face_normals
+        centroids = mesh.triangles_center
+
+        try:
+            com = mesh.center_mass
+        except Exception:
+            com = np.mean(mesh.bounds, axis=0)
+
+        # Pre-compute adjacency for flatness
+        adjacency = mesh.face_adjacency  # (N, 2) pairs of adjacent faces
+
+        # Build neighbour normal map
+        n_faces = len(normals)
+        neighbour_normals: dict[int, list[int]] = {i: [] for i in range(n_faces)}
+        for a, b in adjacency:
+            neighbour_normals[a].append(b)
+            neighbour_normals[b].append(a)
+
+        # Flatness: average dot product with neighbour normals
+        flatness = np.zeros(n_faces)
+        for i in range(n_faces):
+            nbrs = neighbour_normals[i]
+            if nbrs:
+                dots = normals[nbrs] @ normals[i]
+                flatness[i] = float(np.mean(dots))
+            else:
+                flatness[i] = 0.0
+        # Clamp to [0, 1]
+        flatness = np.clip(flatness, 0.0, 1.0)
+
+        # Stability: inverse of horizontal distance from COM projection
+        horiz_dist = np.sqrt(
+            (centroids[:, 0] - com[0]) ** 2 + (centroids[:, 1] - com[1]) ** 2
+        )
+        max_horiz = horiz_dist.max() if horiz_dist.max() > 0 else 1.0
+        stability = 1.0 - (horiz_dist / max_horiz)
+
+        # Accessibility: distance from COM (farther = more exposed)
+        dist_from_com = np.linalg.norm(centroids - com, axis=1)
+        max_dist = dist_from_com.max() if dist_from_com.max() > 0 else 1.0
+        accessibility = dist_from_com / max_dist
+
+        # Composite score (equal weights)
+        composite = (flatness + stability + accessibility) / 3.0
+
+        # Top n indices
+        top_idx = np.argsort(composite)[::-1][:n_points]
+
+        suggestions: list[GripPointSuggestion] = []
+        for i in top_idx:
+            suggestions.append(GripPointSuggestion(
+                position=tuple(centroids[i]),
+                normal=tuple(normals[i]),
+                flatness=float(flatness[i]),
+                stability=float(stability[i]),
+                accessibility=float(accessibility[i]),
+                score=float(composite[i]),
+            ))
+        return suggestions
 
 
 # ============================================================================
@@ -601,3 +857,37 @@ if __name__ == "__main__":
     results = StandardLibrary.search("iphone")
     for key, obj in results:
         print(f"  - {key}: {obj.name}")
+
+    # ------------------------------------------------------------------
+    # Example 4: Advanced mesh analysis on a simple box
+    # ------------------------------------------------------------------
+    if HAS_TRIMESH and HAS_NUMPY and HAS_SCIPY:
+        print("\n--- Advanced Mesh Analysis (box 40x30x20) ---")
+        box = trimesh.primitives.Box(extents=[40, 30, 20])
+        mesh = box.to_mesh()
+        analyzer = MeshAnalyzer()
+
+        # 4a – Flat surface clusters
+        clusters = analyzer.find_flat_surface_clusters(mesh, angle_threshold=10.0)
+        print(f"\nFlat surface clusters: {len(clusters)}")
+        for c in clusters:
+            print(f"  normal={tuple(round(n, 2) for n in c.normal)}, "
+                  f"area={c.area:.1f} mm², faces={c.face_count}")
+
+        # 4b – Optimal orientation (use coarse steps for speed)
+        best = analyzer.find_optimal_orientation(mesh, steps=6)
+        print(f"\nBest orientation: rotation={best.rotation}")
+        print(f"  overhang={best.overhang_area:.1f} mm², "
+              f"base_contact={best.base_contact_area:.1f} mm², "
+              f"support_vol={best.support_volume_estimate:.1f} mm³, "
+              f"score={best.score:.1f}")
+
+        # 4c – Grip point suggestions
+        grips = analyzer.suggest_grip_points(mesh, n_points=4)
+        print(f"\nGrip point suggestions: {len(grips)}")
+        for g in grips:
+            print(f"  pos=({g.position[0]:.1f}, {g.position[1]:.1f}, {g.position[2]:.1f}), "
+                  f"flat={g.flatness:.2f}, stab={g.stability:.2f}, "
+                  f"acc={g.accessibility:.2f}, score={g.score:.2f}")
+    else:
+        print("\nSkipping advanced analysis (trimesh/numpy/scipy not available)")
