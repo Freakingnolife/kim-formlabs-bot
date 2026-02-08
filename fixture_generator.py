@@ -12,7 +12,6 @@ from __future__ import annotations
 import os
 import re
 import subprocess
-import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -56,6 +55,12 @@ class FixtureConfig:
     tool_access: list[str] = field(default_factory=lambda: ["top"])
     wall_thickness: float = 3.0  # mm
     base_height: float = 10.0  # mm
+
+    def __post_init__(self):
+        for name in ("clearance", "wall_thickness", "base_height"):
+            value = getattr(self, name)
+            if value <= 0:
+                raise ValueError(f"{name} must be positive, got {value}")
 
 
 @dataclass
@@ -186,6 +191,8 @@ class MeshAnalyzer:
     def __init__(self):
         if not HAS_TRIMESH:
             raise ImportError("trimesh is required for mesh analysis. Install with: pip install trimesh")
+        if not HAS_NUMPY:
+            raise ImportError("numpy is required for mesh analysis. Install with: pip install numpy")
     
     def analyze(self, filepath: str | Path) -> AnalysisResult:
         """Analyze an STL file and extract key features."""
@@ -196,16 +203,26 @@ class MeshAnalyzer:
         
         # Load mesh
         mesh = trimesh.load_mesh(filepath)
-        
+
+        # Validate mesh is not empty
+        if not hasattr(mesh, 'faces') or len(mesh.faces) == 0:
+            raise ValueError(f"Mesh is empty or invalid: {filepath}")
+
         # Basic dimensions
         bounds = mesh.bounds
         dimensions = tuple(bounds[1] - bounds[0])
-        
-        # Center of mass
-        com = tuple(mesh.center_mass)
-        
-        # Volume
-        volume = mesh.volume
+
+        # Center of mass (may fail for non-watertight meshes)
+        try:
+            com = tuple(mesh.center_mass)
+        except Exception:
+            com = tuple(np.mean(bounds, axis=0))
+
+        # Volume (may fail for non-watertight meshes)
+        try:
+            volume = float(mesh.volume)
+        except Exception:
+            volume = 0.0
         
         # Find flat surfaces (faces with similar normals)
         flat_surfaces = self._find_flat_surfaces(mesh)
@@ -310,6 +327,9 @@ class FixtureGenerator:
     ) -> str:
         """Generate OpenSCAD code for a fixture."""
         
+        # Sanitize name for OpenSCAD (replace special chars with underscores)
+        name = re.sub(r'[^a-zA-Z0-9_\- ]', '_', name)
+
         if isinstance(obj, ObjectDimensions):
             dims = (obj.length, obj.width, obj.height)
             grip_points = obj.grip_points
@@ -318,9 +338,9 @@ class FixtureGenerator:
             dims = obj.dimensions
             grip_points = obj.grip_points
             flat_surfaces = [s["name"] for s in obj.flat_surfaces]
-        
+
         length, width, height = dims
-        
+
         # Generate OpenSCAD code
         scad = self._generate_scad(
             name=name,
