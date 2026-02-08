@@ -59,11 +59,11 @@ class PrintJob:
     id: str
     material_code: str
     estimated_resin_ml: float
-    actual_resin_ml: float | None = None
     status: Literal["queued", "printing", "completed", "failed", "cancelled"]
     user_id: int
+    actual_resin_ml: float | None = None
     printer_id: str | None = None
-    created_at: datetime
+    created_at: datetime | None = None
     started_at: datetime | None = None
     completed_at: datetime | None = None
 
