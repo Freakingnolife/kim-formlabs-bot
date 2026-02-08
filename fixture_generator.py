@@ -29,6 +29,13 @@ try:
 except ImportError:
     HAS_NUMPY = False
 
+try:
+    from scipy.spatial import ConvexHull
+    from scipy.cluster.hierarchy import fcluster, linkage
+    HAS_SCIPY = True
+except ImportError:
+    HAS_SCIPY = False
+
 
 # ============================================================================
 # Data Classes
