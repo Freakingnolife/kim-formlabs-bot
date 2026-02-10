@@ -91,7 +91,7 @@ def cmd_login(telegram_user_id: int, username: str = None) -> str:
 
 
 def cmd_status(telegram_user_id: int) -> str:
-    """Check login status."""
+    """Check login status and verify PreForm connection."""
     creds = get_token(telegram_user_id)
     
     if not creds:
@@ -100,10 +100,33 @@ def cmd_status(telegram_user_id: int) -> str:
             "Use /login to connect your Formlabs account."
         )
     
+    # Try to verify the connection actually works
+    client = get_client_for_user(telegram_user_id)
+    fleet_info = ""
+    
+    if client:
+        try:
+            result = client.list_devices()
+            devices = result.get('devices', [])
+            
+            # Count actual printers
+            total_printers = 0
+            total_groups = 0
+            for group in devices:
+                printers = group.get('printers', [])
+                if printers:
+                    total_printers += len(printers)
+                    total_groups += 1
+            
+            fleet_info = f"• Fleet: {total_printers} printers in {total_groups} groups\n"
+        except Exception as e:
+            fleet_info = f"• Fleet: Unable to fetch ({str(e)[:30]})\n"
+    
     status_msg = (
         f"✅ *Connected to Formlabs*\n\n"
         f"• Account: {creds.username}\n"
         f"• Telegram ID: {creds.telegram_user_id}\n"
+        f"{fleet_info}"
     )
     
     if creds.expires_at:
@@ -318,7 +341,7 @@ def cmd_help(telegram_user_id: int) -> str:
         "/login - Connect your Formlabs account\n"
         "/status - Check connection status\n"
         "/logout - Disconnect your account\n"
-        "/printers - List your printers\n"
+        "/printers (or /printer) - List your printers\n"
         "/materials - Show available materials\n"
         "/jobs - View print jobs\n"
         "/help - Show this help message"
@@ -470,6 +493,7 @@ COMMANDS = {
     '/status': cmd_status,
     '/logout': cmd_logout,
     '/printers': cmd_printers,
+    '/printer': cmd_printers,  # Alias for /printers
     '/materials': cmd_materials,
     '/jobs': cmd_jobs,
     '/help': cmd_help,
@@ -516,6 +540,10 @@ def handle_command(command: str, telegram_user_id: int, args: list = None, usern
     # Handle commands that need username
     if command.lower() == '/login':
         return cmd_func(telegram_user_id, username)
+    
+    # Handle /printer alias (same as /printers)
+    if command.lower() in ['/printers', '/printer']:
+        return cmd_printers(telegram_user_id)
     
     # Call the command function
     if command.lower() == '/jobs' and args:
