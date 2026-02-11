@@ -10,8 +10,10 @@ import os
 import sys
 from pathlib import Path
 
-# Add src to path
-sys.path.insert(0, str(Path(__file__).parent / "src"))
+# Add project root and src to path for imports
+_project_root = str(Path(__file__).parent.parent)
+sys.path.insert(0, _project_root)
+sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from mcp_formlabs.preform_client import PreFormClient, PreFormError
 from mcp_formlabs.keychain import get_token, delete_token

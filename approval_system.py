@@ -26,7 +26,7 @@ def _load_approved() -> set:
         with open(APPROVAL_FILE, 'r') as f:
             data = json.load(f)
             return set(data.get('approved', []))
-    except:
+    except Exception:
         return ADMIN_USERS
 
 

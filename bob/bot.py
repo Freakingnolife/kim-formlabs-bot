@@ -91,11 +91,15 @@ async def login_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         else:
             await update.message.reply_text(f"❌ Login failed: {message}")
 
+    # Capture the running event loop for thread-safe callback scheduling
+    loop = asyncio.get_running_loop()
+
     def sync_callback(success: bool, message: str) -> None:
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                asyncio.create_task(on_login_complete(success, message))
+            loop.call_soon_threadsafe(
+                asyncio.ensure_future,
+                on_login_complete(success, message)
+            )
         except Exception:
             pass
 
@@ -231,6 +235,23 @@ async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await update.message.reply_text(result, parse_mode="Markdown")
 
 
+async def _generic_command(cmd_name: str, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Generic handler for commands that delegate to handle_command."""
+    if not update.effective_user or not update.message:
+        return
+    user_id = update.effective_user.id
+    result = handle_command(cmd_name, user_id, args=context.args)
+    await update.message.reply_text(result, parse_mode="Markdown")
+
+
+# Factory to create command handlers for new features
+def _make_handler(cmd_name: str):
+    async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await _generic_command(cmd_name, update, context)
+    handler.__name__ = f"{cmd_name.strip('/')}_command"
+    return handler
+
+
 def create_bot(token: str | None = None) -> Application:
     """Create and configure Bob."""
     bot_token = token or os.getenv("TELEGRAM_BOT_TOKEN") or os.getenv("BOB_TELEGRAM_TOKEN")
@@ -241,7 +262,7 @@ def create_bot(token: str | None = None) -> Application:
 
     application = Application.builder().token(bot_token).build()
 
-    # Register handlers
+    # Core handlers (original)
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("login", login_command))
     application.add_handler(CommandHandler("logout", logout_command))
@@ -254,6 +275,10 @@ def create_bot(token: str | None = None) -> Application:
     application.add_handler(CommandHandler("approve", approve_command))
     application.add_handler(CommandHandler("reject", reject_command))
     application.add_handler(CommandHandler("users", users_command))
+
+    # New feature handlers
+    for cmd in ["cancel", "progress", "cost", "cartridges", "tanks", "fleet", "queue", "maintenance", "notify"]:
+        application.add_handler(CommandHandler(cmd, _make_handler(f"/{cmd}")))
 
     return application
 

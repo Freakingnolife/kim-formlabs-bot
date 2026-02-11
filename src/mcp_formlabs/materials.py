@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 MATERIALS = {
-    "FLGPGR05": {"name": "Grey V5", "layers": [0.025, 0.05, 0.1]},
-    "FLGPBK05": {"name": "Black V5", "layers": [0.025, 0.05, 0.1]},
-    "FLGPCL05": {"name": "Clear V5", "layers": [0.025, 0.05, 0.1]},
-    "FLGPWH05": {"name": "White V5", "layers": [0.025, 0.05, 0.1]},
-    "FLTO2K02": {"name": "Tough 2000 V2", "layers": [0.05, 0.1]},
-    "FLTOTL02": {"name": "Tough 1500 V2", "layers": [0.05, 0.1]},
-    "FLDUCL21": {"name": "Durable V2.1", "layers": [0.05, 0.1]},
-    "FLELCL02": {"name": "Elastic 50A V2", "layers": [0.05, 0.1]},
-    "FLFMGR01": {"name": "Fast Model V1", "layers": [0.05, 0.1, 0.2]},
+    "FLGPGR05": {"name": "Grey V5", "category": "Standard", "layers": [0.025, 0.05, 0.1]},
+    "FLGPBK05": {"name": "Black V5", "category": "Standard", "layers": [0.025, 0.05, 0.1]},
+    "FLGPCL05": {"name": "Clear V5", "category": "Standard", "layers": [0.025, 0.05, 0.1]},
+    "FLGPWH05": {"name": "White V5", "category": "Standard", "layers": [0.025, 0.05, 0.1]},
+    "FLTO2K02": {"name": "Tough 2000 V2", "category": "Engineering", "layers": [0.05, 0.1]},
+    "FLTOTL02": {"name": "Tough 1500 V2", "category": "Engineering", "layers": [0.05, 0.1]},
+    "FLDUCL21": {"name": "Durable V2.1", "category": "Engineering", "layers": [0.05, 0.1]},
+    "FLELCL02": {"name": "Elastic 50A V2", "category": "Specialty", "layers": [0.05, 0.1]},
+    "FLFMGR01": {"name": "Fast Model V1", "category": "Draft", "layers": [0.05, 0.1, 0.2]},
 }
 
 # Keyword → (material_code, default_layer_height)

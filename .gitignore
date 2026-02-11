@@ -35,3 +35,18 @@ env/
 
 # Environment
 .env
+
+# Testing
+.coverage
+coverage.json
+.pytest_cache/
+htmlcov/
+
+# Data
+data/
+
+# Claude Code
+.claude/
+
+# Spec-Kit
+.specify/

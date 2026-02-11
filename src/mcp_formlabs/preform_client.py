@@ -255,7 +255,7 @@ class PreFormClient:
 
     def list_jobs(self, status: str | None = None) -> list[dict]:
         """GET /jobs/ — list print jobs."""
-        params = {}
+        params: dict[str, Any] = {}
         if status:
             params["status"] = status
         return self._get("/jobs/", params=params)
@@ -264,20 +264,9 @@ class PreFormClient:
         """GET /jobs/{id}/ — get job details."""
         return self._get(f"/jobs/{job_id}/")
 
-    def cancel_job(self, job_id: str) -> dict:
-        """DELETE /jobs/{id}/ — cancel a print job."""
-        return self._request("DELETE", f"/jobs/{job_id}/")
-
-    def list_jobs(self, status: str | None = None) -> list[dict]:
-        """GET /jobs/ — list print jobs."""
-        params: dict[str, Any] = {}
-        if status:
-            params["status"] = status
-        return self._get("/jobs/", params=params)
-
     def get_job_status(self, job_id: str) -> dict:
-        """GET /jobs/{id}/ — get job status."""
-        return self._get(f"/jobs/{job_id}/")
+        """GET /jobs/{id}/ — get job status (alias for get_job)."""
+        return self.get_job(job_id)
 
     def cancel_job(self, job_id: str) -> dict:
         """DELETE /jobs/{id}/ — cancel a print job."""

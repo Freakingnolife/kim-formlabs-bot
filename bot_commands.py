@@ -335,26 +335,42 @@ def cmd_list_users(admin_id: int) -> str:
 def cmd_help(telegram_user_id: int) -> str:
     """Show help message."""
     is_user_admin = is_admin(telegram_user_id)
-    
+
     help_text = (
         "🤖 *Kim Formlabs Bot Commands*\n\n"
+        "*Account:*\n"
         "/login - Connect your Formlabs account\n"
         "/status - Check connection status\n"
-        "/logout - Disconnect your account\n"
-        "/printers (or /printer) - List your printers\n"
-        "/materials - Show available materials\n"
+        "/logout - Disconnect your account\n\n"
+        "*Fleet:*\n"
+        "/printers - List your printers\n"
+        "/fleet - Fleet dashboard overview\n"
+        "/fleet stats - Utilization statistics\n\n"
+        "*Printing:*\n"
         "/jobs - View print jobs\n"
-        "/help - Show this help message"
+        "/progress - Active print progress & ETA\n"
+        "/queue - View print queue\n"
+        "/cancel JOB\\_ID - Cancel a print job\n\n"
+        "*Consumables:*\n"
+        "/cartridges - Resin cartridge levels\n"
+        "/tanks - Tank lifecycle status\n"
+        "/materials - Available materials\n\n"
+        "*Tools:*\n"
+        "/cost - Print cost estimation\n"
+        "/maintenance - Maintenance schedule\n"
+        "/notify on|off - Print notifications\n\n"
+        "/kim on|off - Natural language mode\n"
+        "/help - This message"
     )
-    
+
     if is_user_admin:
         help_text += (
             "\n\n*Admin Commands:*\n"
-            "/approve USER_ID - Approve a new user\n"
-            "/reject USER_ID - Reject/remove a user\n"
+            "/approve USER\\_ID - Approve a new user\n"
+            "/reject USER\\_ID - Reject/remove a user\n"
             "/users - List all approved users"
         )
-    
+
     return help_text
 
 
@@ -487,34 +503,384 @@ def cmd_csi_command(telegram_user_id: int, args: list = None, image_path: str = 
     return cmd_csi(image_path)
 
 
+# ============================================================================
+# WEB API FEATURE COMMANDS
+# ============================================================================
+
+def _get_web_client(telegram_user_id: int):
+    """Get a FormlabsWebClient for the user. Returns None if not configured."""
+    try:
+        from mcp_formlabs.web_api_client import FormlabsWebClient
+        client = FormlabsWebClient()
+        if client.client_id and client.client_secret:
+            client.authenticate()
+            return client
+    except Exception:
+        pass
+    return None
+
+
+def cmd_cancel(telegram_user_id: int, args: list = None) -> str:
+    """Cancel a print job."""
+    if not is_approved(telegram_user_id):
+        return "⏳ Access pending approval."
+
+    if not args:
+        return "Usage: /cancel <job_id>\n\nUse /jobs to see active job IDs."
+
+    client = get_client_for_user(telegram_user_id)
+    if not client:
+        return "❌ Not logged in. Use /login first."
+
+    job_id = args[0]
+    try:
+        client.cancel_job(job_id)
+        return f"🚫 Job `{job_id}` has been cancelled."
+    except PreFormError as e:
+        return f"❌ Cancel failed: {e.detail}"
+    except Exception as e:
+        return f"❌ Error: {str(e)}"
+
+
+def cmd_progress(telegram_user_id: int, args: list = None) -> str:
+    """Show progress of active prints."""
+    if not is_approved(telegram_user_id):
+        return "⏳ Access pending approval."
+
+    web_client = _get_web_client(telegram_user_id)
+    if not web_client:
+        return "❌ Web API not configured. Set FORMLABS_CLIENT_ID and FORMLABS_CLIENT_SECRET."
+
+    try:
+        result = web_client.list_prints(status="PRINTING", per_page=20)
+        prints = result.get("results", []) if isinstance(result, dict) else result
+
+        if not prints:
+            return "📭 No active prints right now."
+
+        lines = ["▶️ *Active Prints*", "=" * 28, ""]
+
+        for p in prints:
+            name = p.get("name", "Unknown")
+            printer = p.get("printer", "unknown")
+            current_layer = p.get("currently_printing_layer", 0) or 0
+            total_layers = p.get("layer_count", 0) or 0
+            eta_ms = p.get("estimated_time_remaining_ms", 0) or 0
+
+            percent = (current_layer / total_layers * 100) if total_layers > 0 else 0
+            bar_filled = int(percent / 100 * 15)
+            bar = f"[{'█' * bar_filled}{'░' * (15 - bar_filled)}]"
+
+            eta_str = ""
+            if eta_ms > 0:
+                hours = eta_ms // 3_600_000
+                minutes = (eta_ms % 3_600_000) // 60_000
+                eta_str = f" | ETA: {hours}h {minutes}m"
+
+            lines.append(f"*{name}*")
+            lines.append(f"  Printer: {printer}")
+            lines.append(f"  {bar} {percent:.0f}%{eta_str}")
+            lines.append(f"  Layer {current_layer:,}/{total_layers:,}")
+            lines.append("")
+
+        return "\n".join(lines)
+    except Exception as e:
+        return f"❌ Error: {str(e)}"
+
+
+def cmd_cost(telegram_user_id: int, args: list = None) -> str:
+    """Show print cost estimates."""
+    if not is_approved(telegram_user_id):
+        return "⏳ Access pending approval."
+
+    web_client = _get_web_client(telegram_user_id)
+    if not web_client:
+        return "❌ Web API not configured. Set FORMLABS_CLIENT_ID and FORMLABS_CLIENT_SECRET."
+
+    try:
+        from mcp_formlabs.cost_calculator import summarize_costs, format_cost_report
+        from datetime import datetime, timedelta
+
+        period = (args[0] if args else "month").lower()
+        if period == "today":
+            since = datetime.now().replace(hour=0, minute=0, second=0).isoformat()
+        elif period == "week":
+            since = (datetime.now() - timedelta(days=7)).isoformat()
+        elif period == "all":
+            since = None
+        else:
+            since = (datetime.now() - timedelta(days=30)).isoformat()
+
+        params = {"status": "FINISHED", "per_page": 100}
+        if since:
+            params["date__gt"] = since
+
+        result = web_client.list_prints(**params)
+        prints = result.get("results", []) if isinstance(result, dict) else result
+        summary = summarize_costs(prints)
+        return format_cost_report(summary)
+    except Exception as e:
+        return f"❌ Error: {str(e)}"
+
+
+def cmd_cartridges(telegram_user_id: int) -> str:
+    """Show cartridge status."""
+    if not is_approved(telegram_user_id):
+        return "⏳ Access pending approval."
+
+    web_client = _get_web_client(telegram_user_id)
+    if not web_client:
+        return "❌ Web API not configured. Set FORMLABS_CLIENT_ID and FORMLABS_CLIENT_SECRET."
+
+    try:
+        result = web_client.list_cartridges(per_page=50)
+        carts = result.get("results", []) if isinstance(result, dict) else result
+
+        if not carts:
+            return "🧪 No cartridges found."
+
+        lines = ["🧪 *Cartridge Status*", "=" * 28, ""]
+
+        for c in carts:
+            initial = c.get("initial_volume_ml", 0) or 0
+            dispensed = c.get("volume_dispensed_ml", 0) or 0
+            remaining = max(0, initial - dispensed)
+            percent = (remaining / initial * 100) if initial > 0 else 0
+            is_empty = c.get("is_empty", False)
+            material = c.get("material", "unknown")
+
+            if is_empty or percent < 10:
+                icon = "🔴"
+            elif percent < 30:
+                icon = "🟡"
+            else:
+                icon = "🟢"
+
+            bar_filled = int(percent / 100 * 10)
+            bar = f"[{'█' * bar_filled}{'░' * (10 - bar_filled)}]"
+
+            name = c.get("display_name", c.get("serial", "unknown")[:12])
+            lines.append(f"{icon} *{name}*")
+            lines.append(f"   Material: {material}")
+            lines.append(f"   {bar} {percent:.0f}% ({remaining:.0f}ml / {initial:.0f}ml)")
+            if c.get("inside_printer"):
+                lines.append(f"   In: {c['inside_printer']}")
+            lines.append("")
+
+        low = sum(1 for c in carts if (c.get("initial_volume_ml", 0) or 0) - (c.get("volume_dispensed_ml", 0) or 0) < (c.get("initial_volume_ml", 1) or 1) * 0.3)
+        if low:
+            lines.append(f"⚠️ {low} cartridge(s) below 30% — consider reordering!")
+
+        return "\n".join(lines)
+    except Exception as e:
+        return f"❌ Error: {str(e)}"
+
+
+def cmd_tanks(telegram_user_id: int) -> str:
+    """Show tank status."""
+    if not is_approved(telegram_user_id):
+        return "⏳ Access pending approval."
+
+    web_client = _get_web_client(telegram_user_id)
+    if not web_client:
+        return "❌ Web API not configured. Set FORMLABS_CLIENT_ID and FORMLABS_CLIENT_SECRET."
+
+    try:
+        from mcp_formlabs.tank_monitor import format_tank_status
+        result = web_client.list_tanks(per_page=50)
+        tanks = result.get("results", []) if isinstance(result, dict) else result
+        return format_tank_status(tanks)
+    except Exception as e:
+        return f"❌ Error: {str(e)}"
+
+
+def cmd_fleet(telegram_user_id: int, args: list = None) -> str:
+    """Show fleet dashboard."""
+    if not is_approved(telegram_user_id):
+        return "⏳ Access pending approval."
+
+    web_client = _get_web_client(telegram_user_id)
+    if not web_client:
+        return "❌ Web API not configured. Set FORMLABS_CLIENT_ID and FORMLABS_CLIENT_SECRET."
+
+    try:
+        from mcp_formlabs.fleet_analytics import format_fleet_overview, format_fleet_stats, compute_fleet_stats
+        from datetime import datetime, timedelta
+
+        printers = web_client.list_printers()
+
+        if args and args[0] == "stats":
+            since = (datetime.now() - timedelta(days=30)).isoformat()
+            result = web_client.list_prints(date__gt=since, per_page=100)
+            prints = result.get("results", []) if isinstance(result, dict) else result
+            stats = compute_fleet_stats(printers, prints)
+            return format_fleet_stats(stats)
+
+        return format_fleet_overview(printers)
+    except Exception as e:
+        return f"❌ Error: {str(e)}"
+
+
+def cmd_queue(telegram_user_id: int, args: list = None) -> str:
+    """Show print queue."""
+    if not is_approved(telegram_user_id):
+        return "⏳ Access pending approval."
+
+    web_client = _get_web_client(telegram_user_id)
+    if not web_client:
+        return "❌ Web API not configured. Set FORMLABS_CLIENT_ID and FORMLABS_CLIENT_SECRET."
+
+    try:
+        groups = web_client.list_groups()
+        all_items = []
+
+        for group in groups:
+            gid = group.get("id", "")
+            gname = group.get("name", "Unknown")
+            items = web_client.get_group_queue(gid)
+            for item in items:
+                item["_group_name"] = gname
+                all_items.append(item)
+
+        if not all_items:
+            result = web_client.list_prints(status="QUEUED", per_page=20)
+            queued = result.get("results", []) if isinstance(result, dict) else result
+            if not queued:
+                return "📭 Print queue is empty."
+
+            lines = ["📋 *Print Queue*", "=" * 28, ""]
+            for i, p in enumerate(queued, 1):
+                name = p.get("name", "Unknown")
+                material = p.get("material_name", p.get("material", "?"))
+                lines.append(f"  {i}. {name} ({material})")
+            return "\n".join(lines)
+
+        lines = ["📋 *Print Queue*", "=" * 28, ""]
+        for i, item in enumerate(all_items, 1):
+            name = item.get("name", "Unknown")
+            material = item.get("material_name", "?")
+            group = item.get("_group_name", "?")
+            lines.append(f"  {i}. {name} ({material}) — {group}")
+
+        return "\n".join(lines)
+    except Exception as e:
+        return f"❌ Error: {str(e)}"
+
+
+def cmd_maintenance(telegram_user_id: int, args: list = None) -> str:
+    """Show maintenance schedule."""
+    if not is_approved(telegram_user_id):
+        return "⏳ Access pending approval."
+
+    try:
+        from mcp_formlabs.maintenance_tracker import MaintenanceTracker, format_maintenance_status
+
+        tracker = MaintenanceTracker()
+
+        if args and len(args) >= 3 and args[0] == "done":
+            task_id = args[1]
+            printer_serial = args[2]
+            if tracker.mark_done(telegram_user_id, printer_serial, task_id):
+                return f"✅ Marked *{task_id}* as done for {printer_serial}."
+            return f"❌ Unknown task: {task_id}"
+
+        # Get printers to show maintenance for
+        web_client = _get_web_client(telegram_user_id)
+        if not web_client:
+            return "❌ Web API not configured. Set FORMLABS_CLIENT_ID and FORMLABS_CLIENT_SECRET."
+
+        printers = web_client.list_printers()
+        if not printers:
+            return "No printers found."
+
+        lines = ["🔧 *Maintenance Schedule*", "=" * 28, ""]
+        for p in printers[:5]:
+            serial = p.get("serial", "unknown")
+            alias = p.get("alias", serial)
+            tasks = tracker.get_due_tasks(telegram_user_id, serial)
+            overdue = [t for t in tasks if t["status"] in ("overdue", "never_done")]
+            if overdue:
+                lines.append(f"⚠️ *{alias}* ({len(overdue)} overdue)")
+                for t in overdue[:3]:
+                    lines.append(f"   🔴 {t['name']}")
+            else:
+                lines.append(f"✅ *{alias}* — all up to date")
+            lines.append("")
+
+        lines.append("Details: `/maintenance done <task_id> <printer_serial>`")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"❌ Error: {str(e)}"
+
+
+def cmd_notify(telegram_user_id: int, args: list = None) -> str:
+    """Manage print notifications."""
+    if not is_approved(telegram_user_id):
+        return "⏳ Access pending approval."
+
+    try:
+        from mcp_formlabs.notification_service import NotificationDB
+
+        db = NotificationDB()
+        action = (args[0] if args else "status").lower()
+
+        if action == "on":
+            printer = args[1] if len(args) > 1 else "*"
+            db.subscribe(telegram_user_id, printer)
+            target = "all printers" if printer == "*" else printer
+            return f"🔔 Notifications enabled for {target}.\n\nYou'll receive alerts when prints finish, fail, or encounter errors."
+
+        if action == "off":
+            db.unsubscribe(telegram_user_id)
+            return "🔕 Notifications disabled."
+
+        # Status
+        is_sub = db.is_subscribed(telegram_user_id)
+        if is_sub:
+            return "🔔 Notifications: *Enabled*\n\nUse `/notify off` to disable."
+        return "🔕 Notifications: *Disabled*\n\nUse `/notify on` to enable."
+    except Exception as e:
+        return f"❌ Error: {str(e)}"
+
+
 # Command dispatcher
 COMMANDS = {
     '/login': cmd_login,
     '/status': cmd_status,
     '/logout': cmd_logout,
     '/printers': cmd_printers,
-    '/printer': cmd_printers,  # Alias for /printers
+    '/printer': cmd_printers,
     '/materials': cmd_materials,
     '/jobs': cmd_jobs,
     '/help': cmd_help,
     '/approve': cmd_approve,
     '/reject': cmd_reject,
     '/users': cmd_list_users,
-    # New features
+    # Original advanced features
     '/fixture': cmd_fixture,
     '/resin': cmd_resin,
     '/csi': cmd_csi_command,
+    # New features (Web API powered)
+    '/cancel': cmd_cancel,
+    '/progress': cmd_progress,
+    '/cost': cmd_cost,
+    '/cartridges': cmd_cartridges,
+    '/tanks': cmd_tanks,
+    '/fleet': cmd_fleet,
+    '/queue': cmd_queue,
+    '/maintenance': cmd_maintenance,
+    '/notify': cmd_notify,
 }
 
 
 def handle_command(command: str, telegram_user_id: int, args: list = None, username: str = None) -> str:
     """Handle a bot command."""
     cmd_func = COMMANDS.get(command.lower())
-    
+
     if not cmd_func:
         return f"Unknown command: {command}. Use /help for available commands."
-    
-    # Handle admin commands
+
+    # Commands that take (user_id, target_id)
     if command.lower() in ['/approve', '/reject']:
         if not args:
             return f"Usage: {command} USER_ID"
@@ -523,32 +889,20 @@ def handle_command(command: str, telegram_user_id: int, args: list = None, usern
             return cmd_func(telegram_user_id, target_id)
         except ValueError:
             return f"Invalid user ID. Usage: {command} USER_ID"
-    
-    # Handle fixture command with args
-    if command.lower() == '/fixture':
-        return cmd_fixture(telegram_user_id, args)
-    
-    # Handle resin command with args
-    if command.lower() == '/resin':
-        return cmd_resin(telegram_user_id, args)
-    
-    # Handle CSI command (needs image path)
-    if command.lower() == '/csi':
-        # Image path would be passed separately in real implementation
-        return cmd_csi_command(telegram_user_id, args)
-    
-    # Handle commands that need username
+
+    # Commands that take (user_id, args)
+    if command.lower() in ['/fixture', '/resin', '/csi', '/cancel', '/cost', '/fleet', '/queue', '/maintenance', '/notify']:
+        return cmd_func(telegram_user_id, args)
+
+    # Commands that need username
     if command.lower() == '/login':
         return cmd_func(telegram_user_id, username)
-    
-    # Handle /printer alias (same as /printers)
-    if command.lower() in ['/printers', '/printer']:
-        return cmd_printers(telegram_user_id)
-    
-    # Call the command function
+
+    # Commands with optional status filter
     if command.lower() == '/jobs' and args:
-        return cmd_jobs(telegram_user_id, status_filter=args[0] if args else None)
-    
+        return cmd_jobs(telegram_user_id, status_filter=args[0])
+
+    # Simple commands (user_id only)
     return cmd_func(telegram_user_id)
 
 

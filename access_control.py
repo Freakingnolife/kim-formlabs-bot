@@ -36,7 +36,7 @@ def _load_data():
                 if key not in data:
                     data[key] = []
             return data
-    except:
+    except Exception:
         return {"approved": list(ADMINS), "pending": [], "rejected": [], "admin": list(ADMINS)}
 
 
